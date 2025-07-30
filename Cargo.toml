@@ -1,0 +1,10 @@
+[package]
+name = "request"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[[example]]
+name = "basic_usage"
+path = "examples/basic_usage.rs"
