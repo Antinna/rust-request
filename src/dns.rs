@@ -489,11 +489,13 @@ mod tests {
 
     #[test]
     fn test_dns_stats() {
-        let mut stats = DnsStats::default();
-        stats.queries_sent = 10;
-        stats.responses_received = 8;
-        stats.cache_hits = 5;
-        stats.cache_misses = 3;
+        let stats = DnsStats {
+            queries_sent: 10,
+            responses_received: 8,
+            cache_hits: 5,
+            cache_misses: 3,
+            ..Default::default()
+        };
         
         assert_eq!(stats.success_rate(), 0.8);
         assert_eq!(stats.cache_hit_rate(), 0.625);

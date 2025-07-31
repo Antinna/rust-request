@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Content length: {} bytes", response.body_len());
     if let Ok(json) = response.json() {
         if let Some(headers) = json.get("headers") {
-            println!("   Server saw headers: {}", headers);
+            println!("   Server saw headers: {headers}");
         }
     }
     println!();
@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Status: {} {}", response.status(), response.status_text());
     if let Ok(json) = response.json() {
         if let Some(data) = json.get("json") {
-            println!("   Server received JSON: {}", data);
+            println!("   Server received JSON: {data}");
         }
     }
     println!();
@@ -68,17 +68,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let response = client
         .post("http://httpbin.org/post")
-        .header("Content-Type", &form.content_type())
+        .header("Content-Type", form.content_type())
         .body(form.to_bytes())
         .send()?;
 
     println!("   Status: {} {}", response.status(), response.status_text());
     if let Ok(json) = response.json() {
         if let Some(files) = json.get("files") {
-            println!("   Server received files: {}", files);
+            println!("   Server received files: {files}");
         }
         if let Some(form_data) = json.get("form") {
-            println!("   Server received form: {}", form_data);
+            println!("   Server received form: {form_data}");
         }
     }
     println!();
@@ -122,7 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Cookie usage status: {}", response.status());
     if let Ok(json) = response.json() {
         if let Some(cookies) = json.get("cookies") {
-            println!("   Server saw cookies: {}", cookies);
+            println!("   Server saw cookies: {cookies}");
         }
     }
     println!();
@@ -156,14 +156,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let response = client.get("http://httpbin.org/status/404").send();
     match response {
         Ok(resp) => println!("   404 request succeeded with status: {}", resp.status()),
-        Err(e) => println!("   404 request failed: {}", e),
+        Err(e) => println!("   404 request failed: {e}"),
     }
 
     // Test 500
     let response = client.get("http://httpbin.org/status/500").send();
     match response {
         Ok(resp) => println!("   500 request succeeded with status: {}", resp.status()),
-        Err(e) => println!("   500 request failed: {}", e),
+        Err(e) => println!("   500 request failed: {e}"),
     }
     println!();
 
@@ -212,7 +212,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .send();
     match response {
         Ok(resp) => println!("   No-redirect client: {} {}", resp.status(), resp.status_text()),
-        Err(e) => println!("   No-redirect client error: {}", e),
+        Err(e) => println!("   No-redirect client error: {e}"),
     }
     println!();
 
@@ -222,12 +222,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     match dns_resolver.resolve_ip("httpbin.org") {
         Ok(ips) => {
-            println!("   Resolved httpbin.org to: {:?}", ips);
+            println!("   Resolved httpbin.org to: {ips:?}");
             if !ips.is_empty() {
                 println!("   Using first IP: {}", ips[0]);
             }
         },
-        Err(e) => println!("   DNS resolution failed: {}", e),
+        Err(e) => println!("   DNS resolution failed: {e}"),
     }
     
     // Test DNS caching
@@ -278,7 +278,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(json) = response.json() {
         if let Some(headers) = json.get("headers") {
             if let Some(api_key) = headers.get("X-Api-Key") {
-                println!("   Server received API key: {}", api_key);
+                println!("   Server received API key: {api_key}");
             }
         }
     }
@@ -317,7 +317,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 1..=3 {
         let response = pooled_client
             .get("http://httpbin.org/get")
-            .query("request", &i.to_string())
+            .query("request", i.to_string())
             .send()?;
         println!("   Request {}: {} ({}ms)", 
             i, response.status(), response.response_time_ms());
@@ -350,7 +350,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("   JSON response structure:");
         if let Some(slideshow) = json.get("slideshow") {
             if let Some(title) = slideshow.get("title") {
-                println!("   - Slideshow title: {}", title);
+                println!("   - Slideshow title: {title}");
             }
             if let Some(slides) = slideshow.get("slides") {
                 if let Some(slides_array) = slides.as_array() {
@@ -414,10 +414,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let max_time = *response_times.iter().max().unwrap();
     
     println!("   Performance Summary:");
-    println!("   - Total time: {:?}", total_time);
-    println!("   - Average response time: {}ms", avg_time);
-    println!("   - Min response time: {}ms", min_time);
-    println!("   - Max response time: {}ms", max_time);
+    println!("   - Total time: {total_time:?}");
+    println!("   - Average response time: {avg_time}ms");
+    println!("   - Min response time: {min_time}ms");
+    println!("   - Max response time: {max_time}ms");
     println!("   - Requests per second: {:.2}", 5.0 / total_time.as_secs_f64());
     println!();
 
@@ -437,7 +437,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             Err(e) => {
                 retry_count += 1;
-                println!("   Attempt {} failed: {}", retry_count, e);
+                println!("   Attempt {retry_count} failed: {e}");
                 
                 if retry_count >= max_retries {
                     println!("   Max retries reached, giving up");
@@ -446,7 +446,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 
                 // Exponential backoff
                 let delay = Duration::from_millis(100 * (2_u64.pow(retry_count as u32)));
-                println!("   Retrying in {:?}...", delay);
+                println!("   Retrying in {delay:?}...");
                 std::thread::sleep(delay);
             }
         }

@@ -852,13 +852,13 @@ mod tests {
         let values = vec![
             JsonValue::null(),
             JsonValue::bool(true),
-            JsonValue::number(3.14),
+            JsonValue::number(std::f64::consts::PI),
             JsonValue::string("test"),
             JsonValue::empty_array(),
             JsonValue::empty_object(),
         ];
 
-        let type_names = vec!["null", "boolean", "number", "string", "array", "object"];
+        let type_names = ["null", "boolean", "number", "string", "array", "object"];
         
         for (value, expected_type) in values.iter().zip(type_names.iter()) {
             assert_eq!(value.type_name(), *expected_type);

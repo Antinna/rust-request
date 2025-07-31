@@ -1690,8 +1690,8 @@ mod tests {
         assert!(!compressed_best.is_empty());
         
         // Both should produce valid output
-        assert!(compressed_fast.len() > 0);
-        assert!(compressed_best.len() > 0);
+        assert!(!compressed_fast.is_empty());
+        assert!(!compressed_best.is_empty());
     }
 }   
  #[test]
@@ -1735,7 +1735,7 @@ mod tests {
         assert_eq!(result, Compression::Gzip); // Should be Gzip for long text
         
         // Binary-like data should prefer brotli
-        let binary_data = vec![0u8, 1u8, 255u8, 128u8, 64u8, 32u8, 16u8, 8u8, 4u8, 2u8, 1u8].repeat(100);
+        let binary_data = [0u8, 1u8, 255u8, 128u8, 64u8, 32u8, 16u8, 8u8, 4u8, 2u8, 1u8].repeat(100);
         assert_eq!(get_best_compression_for_data(&binary_data), Compression::Brotli);
     }
 

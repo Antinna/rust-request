@@ -17,16 +17,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     match dns_resolver.resolve_ip("httpbin.org") {
         Ok(ips) => {
-            println!("   Resolved httpbin.org to: {:?}", ips);
+            println!("   Resolved httpbin.org to: {ips:?}");
         },
-        Err(e) => println!("   DNS resolution failed: {}", e),
+        Err(e) => println!("   DNS resolution failed: {e}"),
     }
 
     match dns_resolver.resolve_txt("google.com") {
         Ok(txt_records) => {
-            println!("   TXT records for google.com: {:?}", txt_records);
+            println!("   TXT records for google.com: {txt_records:?}");
         },
-        Err(e) => println!("   TXT lookup failed: {}", e),
+        Err(e) => println!("   TXT lookup failed: {e}"),
     }
     println!();
 
@@ -96,7 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .auth(Auth::basic("testuser", "testpass"))
         .send() {
         Ok(response) => println!("   Basic Auth: {} {}", response.status(), response.status_text()),
-        Err(e) => println!("   Basic Auth failed: {}", e),
+        Err(e) => println!("   Basic Auth failed: {e}"),
     }
 
     // Bearer Token
@@ -105,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .auth(Auth::bearer("test-jwt-token-12345"))
         .send() {
         Ok(response) => println!("   Bearer Auth: {} {}", response.status(), response.status_text()),
-        Err(e) => println!("   Bearer Auth failed: {}", e),
+        Err(e) => println!("   Bearer Auth failed: {e}"),
     }
 
     // Custom Auth Header
@@ -114,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .auth(Auth::custom("X-API-Key", "secret-api-key-67890"))
         .send() {
         Ok(response) => println!("   Custom Auth: {} {}", response.status(), response.status_text()),
-        Err(e) => println!("   Custom Auth failed: {}", e),
+        Err(e) => println!("   Custom Auth failed: {e}"),
     }
     println!();
 
@@ -137,7 +137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      Cookie: {}={}", cookie.name, cookie.value);
             }
         },
-        Err(e) => println!("   Cookie setting failed: {}", e),
+        Err(e) => println!("   Cookie setting failed: {e}"),
     }
 
     // Use cookies
@@ -148,11 +148,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   Cookie usage: {} {}", response.status(), response.status_text());
             if let Ok(json) = response.json() {
                 if let Some(cookies) = json.get("cookies") {
-                    println!("      Server received: {}", cookies);
+                    println!("      Server received: {cookies}");
                 }
             }
         },
-        Err(e) => println!("   Cookie usage failed: {}", e),
+        Err(e) => println!("   Cookie usage failed: {e}"),
     }
     println!();
 
@@ -188,11 +188,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             if let Ok(json) = response.json() {
                 if let Some(files) = json.get("files") {
-                    println!("      Files received: {}", files);
+                    println!("      Files received: {files}");
                 }
             }
         },
-        Err(e) => println!("   Multipart upload failed: {}", e),
+        Err(e) => println!("   Multipart upload failed: {e}"),
     }
     println!();
 
@@ -218,14 +218,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   ✅ JSON parsing successful");
             if let Some(user) = json.get("user") {
                 if let Some(name) = user.get("name").and_then(|v| v.as_str()) {
-                    println!("      User name: {}", name);
+                    println!("      User name: {name}");
                 }
                 if let Some(scores) = user.get("scores").and_then(|v| v.as_array()) {
                     println!("      Scores: {} items", scores.len());
                 }
             }
         },
-        Err(e) => println!("   JSON parsing failed: {}", e),
+        Err(e) => println!("   JSON parsing failed: {e}"),
     }
 
     // Send JSON request
@@ -236,7 +236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(response) => {
             println!("   JSON request: {} {}", response.status(), response.status_text());
         },
-        Err(e) => println!("   JSON request failed: {}", e),
+        Err(e) => println!("   JSON request failed: {e}"),
     }
     println!();
 
@@ -259,7 +259,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 response.url().authority()
             );
         },
-        Err(e) => println!("   Redirect following failed: {}", e),
+        Err(e) => println!("   Redirect following failed: {e}"),
     }
 
     // No redirects
@@ -273,7 +273,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(response) => {
             println!("   No redirect: {} {}", response.status(), response.status_text());
         },
-        Err(e) => println!("   No redirect failed: {}", e),
+        Err(e) => println!("   No redirect failed: {e}"),
     }
     println!();
 
@@ -300,13 +300,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             // Security headers
             if let Some(csp) = response.content_security_policy() {
-                println!("   - CSP: {}", csp);
+                println!("   - CSP: {csp}");
             }
             if let Some(hsts) = response.strict_transport_security() {
-                println!("   - HSTS: {}", hsts);
+                println!("   - HSTS: {hsts}");
             }
         },
-        Err(e) => println!("   Response analysis failed: {}", e),
+        Err(e) => println!("   Response analysis failed: {e}"),
     }
     println!();
 
@@ -328,7 +328,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("   {}: {} {}", description, response.status(), response.status_text());
             },
             Err(e) => {
-                println!("   {}: {}", description, e);
+                println!("   {description}: {e}");
             }
         }
     }
@@ -345,7 +345,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 1..=total_requests {
         match client
             .get("http://httpbin.org/get")
-            .query("request_id", &i.to_string())
+            .query("request_id", i.to_string())
             .send() {
             Ok(response) => {
                 if response.is_success() {
@@ -358,16 +358,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             },
             Err(e) => {
-                println!("   Request {}: Error - {}", i, e);
+                println!("   Request {i}: Error - {e}");
             }
         }
     }
 
     let total_time = start.elapsed();
     println!("   Performance Summary:");
-    println!("   - Total requests: {}", total_requests);
-    println!("   - Successful: {}", successful_requests);
-    println!("   - Total time: {:?}", total_time);
+    println!("   - Total requests: {total_requests}");
+    println!("   - Successful: {successful_requests}");
+    println!("   - Total time: {total_time:?}");
     println!("   - Average time: {:?}", total_time / total_requests);
     println!();
 
@@ -412,7 +412,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   - Headers frame: {} bytes", frame.to_bytes().len());
         },
         Err(e) => {
-            println!("   - Headers frame error: {}", e);
+            println!("   - Headers frame error: {e}");
         }
     }
     println!();

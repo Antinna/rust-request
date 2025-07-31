@@ -461,18 +461,18 @@ fn test_consistent_hash_ring() {
     // Test distribution
     let mut distribution = HashMap::new();
     for i in 0..1000 {
-        let key = format!("user{}", i);
+        let key = format!("user{i}");
         if let Some(backend) = ring.get_backend(&key) {
             *distribution.entry(backend).or_insert(0) += 1;
         }
     }
 
     // Debug: print the distribution
-    println!("Distribution: {:?}", distribution);
+    println!("Distribution: {distribution:?}");
 
     // Should have reasonable distribution across backends
     // Note: Due to hash distribution, we might not get all 3 backends
-    assert!(distribution.len() >= 1);
+    assert!(!distribution.is_empty());
     for count in distribution.values() {
         assert!(*count > 0); // Each backend should get at least some requests
     }
@@ -483,7 +483,7 @@ fn test_consistent_hash_ring() {
     // Test distribution after removal
     let mut new_distribution = HashMap::new();
     for i in 0..1000 {
-        let key = format!("user{}", i);
+        let key = format!("user{i}");
         if let Some(backend) = ring.get_backend(&key) {
             *new_distribution.entry(backend).or_insert(0) += 1;
         }
