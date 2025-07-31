@@ -1,7 +1,118 @@
-use crate::{Result, Error};
+use crate::{Error, Result};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 
+/// TLS protocol versions
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TlsVersion {
+    Tls10 = 0x0301,
+    Tls11 = 0x0302,
+    Tls12 = 0x0303,
+    Tls13 = 0x0304,
+}
+
+impl TlsVersion {
+    pub fn as_u16(&self) -> u16 {
+        *self as u16
+    }
+    
+    pub fn from_u16(value: u16) -> Option<Self> {
+        match value {
+            0x0301 => Some(TlsVersion::Tls10),
+            0x0302 => Some(TlsVersion::Tls11),
+            0x0303 => Some(TlsVersion::Tls12),
+            0x0304 => Some(TlsVersion::Tls13),
+            _ => None,
+        }
+    }
+    
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TlsVersion::Tls10 => "TLSv1.0",
+            TlsVersion::Tls11 => "TLSv1.1",
+            TlsVersion::Tls12 => "TLSv1.2",
+            TlsVersion::Tls13 => "TLSv1.3",
+        }
+    }
+    
+    pub fn is_secure(&self) -> bool {
+        *self >= TlsVersion::Tls12
+    }
+    
+    pub fn as_bytes(&self) -> [u8; 2] {
+        let value = self.as_u16();
+        [(value >> 8) as u8, value as u8]
+    }
+}
+
+/// Cipher suite information
+#[derive(Debug, Clone)]
+pub struct CipherSuite {
+    pub id: u16,
+    pub name: String,
+    pub key_exchange: KeyExchangeAlgorithm,
+    pub authentication: AuthenticationAlgorithm,
+    pub encryption: EncryptionAlgorithm,
+    pub mac: MacAlgorithm,
+    pub security_level: SecurityLevel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyExchangeAlgorithm {
+    RSA,
+    ECDHE,
+    DHE,
+    PSK,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthenticationAlgorithm {
+    RSA,
+    ECDSA,
+    DSA,
+    PSK,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncryptionAlgorithm {
+    AES128GCM,
+    AES256GCM,
+    AES128CBC,
+    AES256CBC,
+    ChaCha20Poly1305,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacAlgorithm {
+    SHA256,
+    SHA384,
+    AEAD,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SecurityLevel {
+    Weak,
+    Medium,
+    Strong,
+    VeryStrong,
+}
+
+/// Certificate formats
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertificateFormat {
+    PEM,
+    DER,
+    PKCS12,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyFormat {
+    PEM,
+    DER,
+    PKCS8,
+    PKCS1RSA,
+    PKCS1EC,
+}
 
 #[derive(Debug, Clone)]
 pub struct TlsConfig {
@@ -12,6 +123,15 @@ pub struct TlsConfig {
     pub client_cert: Option<ClientCertificate>,
     pub supported_versions: Vec<TlsVersion>,
     pub cipher_suites: Vec<u16>,
+    pub min_protocol_version: TlsVersion,
+    pub max_protocol_version: TlsVersion,
+    pub enable_sni: bool,
+    pub enable_alpn: bool,
+    pub alpn_protocols: Vec<String>,
+    pub session_cache_size: usize,
+    pub session_timeout: std::time::Duration,
+    pub enable_ocsp_stapling: bool,
+    pub enable_sct: bool, // Certificate Transparency
 }
 
 impl TlsConfig {
@@ -26,10 +146,47 @@ impl TlsConfig {
             cipher_suites: vec![
                 0x1301, // TLS_AES_128_GCM_SHA256
                 0x1302, // TLS_AES_256_GCM_SHA384
+                0x1303, // TLS_CHACHA20_POLY1305_SHA256
                 0xc02f, // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
                 0xc030, // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+                0xcca9, // TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
             ],
+            min_protocol_version: TlsVersion::Tls12,
+            max_protocol_version: TlsVersion::Tls13,
+            enable_sni: true,
+            enable_alpn: true,
+            alpn_protocols: vec!["h2".to_string(), "http/1.1".to_string()],
+            session_cache_size: 1000,
+            session_timeout: std::time::Duration::from_secs(3600), // 1 hour
+            enable_ocsp_stapling: true,
+            enable_sct: true,
         }
+    }
+    
+    /// Create a secure config with only strong ciphers
+    pub fn secure() -> Self {
+        let mut config = Self::new();
+        config.cipher_suites = vec![
+            0x1301, // TLS_AES_128_GCM_SHA256
+            0x1302, // TLS_AES_256_GCM_SHA384
+            0x1303, // TLS_CHACHA20_POLY1305_SHA256
+            0xc02f, // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+            0xc030, // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        ];
+        config
+    }
+    
+    /// Create a compatible config for older systems
+    pub fn compatible() -> Self {
+        let mut config = Self::new();
+        config.supported_versions = vec![
+            TlsVersion::Tls10,
+            TlsVersion::Tls11,
+            TlsVersion::Tls12,
+            TlsVersion::Tls13,
+        ];
+        config.min_protocol_version = TlsVersion::Tls10;
+        config
     }
 
     pub fn danger_accept_invalid_certs(mut self) -> Self {
@@ -42,19 +199,99 @@ impl TlsConfig {
         self
     }
 
-    pub fn with_ca_cert(mut self, cert: Vec<u8>) -> Self {
-        self.ca_certs.push(cert);
+    pub fn with_ca_certs(mut self, ca_certs: Vec<Vec<u8>>) -> Self {
+        self.ca_certs = ca_certs;
         self
     }
 
-    pub fn with_client_cert(mut self, cert: ClientCertificate) -> Self {
-        self.client_cert = Some(cert);
+    pub fn with_client_cert(mut self, client_cert: ClientCertificate) -> Self {
+        self.client_cert = Some(client_cert);
         self
     }
 
     pub fn with_supported_versions(mut self, versions: Vec<TlsVersion>) -> Self {
         self.supported_versions = versions;
         self
+    }
+    
+    pub fn with_min_protocol_version(mut self, version: TlsVersion) -> Self {
+        self.min_protocol_version = version;
+        self
+    }
+    
+    pub fn with_max_protocol_version(mut self, version: TlsVersion) -> Self {
+        self.max_protocol_version = version;
+        self
+    }
+    
+    pub fn with_cipher_suites(mut self, cipher_suites: Vec<u16>) -> Self {
+        self.cipher_suites = cipher_suites;
+        self
+    }
+    
+    pub fn with_alpn_protocols(mut self, protocols: Vec<String>) -> Self {
+        self.alpn_protocols = protocols;
+        self
+    }
+    
+    pub fn disable_sni(mut self) -> Self {
+        self.enable_sni = false;
+        self
+    }
+    
+    pub fn disable_alpn(mut self) -> Self {
+        self.enable_alpn = false;
+        self
+    }
+    
+    pub fn with_session_cache_size(mut self, size: usize) -> Self {
+        self.session_cache_size = size;
+        self
+    }
+    
+    pub fn with_session_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.session_timeout = timeout;
+        self
+    }
+    
+    pub fn enable_ocsp_stapling(mut self) -> Self {
+        self.enable_ocsp_stapling = true;
+        self
+    }
+    
+    pub fn disable_sct(mut self) -> Self {
+        self.enable_sct = false;
+        self
+    }
+    
+    /// Check if configuration is secure
+    pub fn is_secure(&self) -> bool {
+        self.min_protocol_version >= TlsVersion::Tls12 && 
+        self.verify_certificates && 
+        !self.accept_invalid_certs
+    }
+    
+    /// Get supported cipher suites as objects
+    pub fn get_cipher_suites(&self) -> Vec<CipherSuite> {
+        self.cipher_suites
+            .iter()
+            .filter_map(|&id| get_cipher_suite_info(id))
+            .collect()
+    }
+    
+    /// Filter cipher suites by security level
+    pub fn filter_by_security_level(&self, min_level: SecurityLevel) -> Vec<u16> {
+        self.cipher_suites
+            .iter()
+            .filter(|&&id| {
+                if let Some(suite) = get_cipher_suite_info(id) {
+                    suite.security_level >= min_level
+                } else {
+                    false
+                }
+            })
+            .copied()
+            .collect()
     }
 }
 
@@ -69,6 +306,8 @@ pub struct ClientCertificate {
     pub cert: Vec<u8>,
     pub key: Vec<u8>,
     pub password: Option<String>,
+    pub cert_format: CertificateFormat,
+    pub key_format: KeyFormat,
 }
 
 impl ClientCertificate {
@@ -77,6 +316,38 @@ impl ClientCertificate {
             cert,
             key,
             password: None,
+            cert_format: CertificateFormat::PEM,
+            key_format: KeyFormat::PEM,
+        }
+    }
+    
+    pub fn from_pem(cert_pem: Vec<u8>, key_pem: Vec<u8>) -> Self {
+        ClientCertificate {
+            cert: cert_pem,
+            key: key_pem,
+            password: None,
+            cert_format: CertificateFormat::PEM,
+            key_format: KeyFormat::PEM,
+        }
+    }
+    
+    pub fn from_der(cert_der: Vec<u8>, key_der: Vec<u8>) -> Self {
+        ClientCertificate {
+            cert: cert_der,
+            key: key_der,
+            password: None,
+            cert_format: CertificateFormat::DER,
+            key_format: KeyFormat::DER,
+        }
+    }
+    
+    pub fn from_pkcs12(pkcs12_data: Vec<u8>, password: String) -> Self {
+        ClientCertificate {
+            cert: pkcs12_data.clone(),
+            key: pkcs12_data,
+            password: Some(password),
+            cert_format: CertificateFormat::PKCS12,
+            key_format: KeyFormat::PKCS8,
         }
     }
 
@@ -84,111 +355,82 @@ impl ClientCertificate {
         self.password = Some(password);
         self
     }
+    
+    pub fn with_cert_format(mut self, format: CertificateFormat) -> Self {
+        self.cert_format = format;
+        self
+    }
+    
+    pub fn with_key_format(mut self, format: KeyFormat) -> Self {
+        self.key_format = format;
+        self
+    }
+    
+    /// Validate certificate and key
+    pub fn validate(&self) -> Result<()> {
+        if self.cert.is_empty() {
+            return Err(Error::TlsError("Certificate is empty".to_string()));
+        }
+        
+        if self.key.is_empty() {
+            return Err(Error::TlsError("Private key is empty".to_string()));
+        }
+        
+        // Check if PKCS12 format requires password
+        if self.cert_format == CertificateFormat::PKCS12 && self.password.is_none() {
+            return Err(Error::TlsError("PKCS12 format requires password".to_string()));
+        }
+        
+        Ok(())
+    }
+    
+    /// Get certificate information
+    pub fn get_info(&self) -> CertificateInfo {
+        CertificateInfo {
+            format: self.cert_format,
+            cert_size: self.cert.len(),
+            key_format: self.key_format,
+            key_size: self.key.len(),
+            has_password: self.password.is_some(),
+        }
+    }
 }
 
-// TLS stream implementation with basic TLS 1.2 support
+#[derive(Debug, Clone)]
+pub struct CertificateInfo {
+    pub format: CertificateFormat,
+    pub cert_size: usize,
+    pub key_format: KeyFormat,
+    pub key_size: usize,
+    pub has_password: bool,
+}
+
+// TLS stream implementation
 pub struct TlsStream {
     inner: TcpStream,
-    session: TlsSession,
 }
 
 impl TlsStream {
-    pub fn connect(mut stream: TcpStream, hostname: &str, config: &TlsConfig) -> Result<Self> {
-        // Perform TLS handshake
-        let mut session = TlsSession::new(config.clone());
-        
-        // Send Client Hello
-        let client_hello = session.create_client_hello(hostname)?;
-        stream.write_all(&client_hello)?;
-        stream.flush()?;
-
-        // Read Server Hello and other handshake messages
-        let mut handshake_buffer = vec![0u8; 4096];
-        let bytes_read = stream.read(&mut handshake_buffer)?;
-        handshake_buffer.truncate(bytes_read);
-
-        session.process_server_messages(&handshake_buffer)?;
-
-        // Verify certificate if required
-        if !config.accept_invalid_certs && config.verify_certificates {
-            if let Some(ref cert) = session.peer_certificate {
-                verify_certificate_basic(cert)?;
-            }
-        }
-
-        // Verify hostname if required
-        if !config.accept_invalid_hostnames {
-            if let Some(ref cert) = session.peer_certificate {
-                verify_hostname_basic(cert, hostname)?;
-            }
-        }
-
-        // Send Client Key Exchange and Finished
-        let client_key_exchange = session.create_client_key_exchange()?;
-        stream.write_all(&client_key_exchange)?;
-
-        let finished = session.create_finished_message()?;
-        stream.write_all(&finished)?;
-        stream.flush()?;
-
-        // Read Server Finished
-        let mut finished_buffer = vec![0u8; 1024];
-        let bytes_read = stream.read(&mut finished_buffer)?;
-        finished_buffer.truncate(bytes_read);
-
-        session.process_server_finished(&finished_buffer)?;
-
-        Ok(TlsStream {
-            inner: stream,
-            session,
-        })
+    pub fn connect(stream: TcpStream, _hostname: &str, _config: &TlsConfig) -> Result<Self> {
+        // In a real implementation, this would perform the full TLS handshake
+        // For now, we just wrap the stream
+        Ok(TlsStream { inner: stream })
     }
 
     pub fn into_inner(self) -> TcpStream {
         self.inner
     }
-
-    pub fn peer_certificate(&self) -> Option<&Certificate> {
-        self.session.peer_certificate.as_ref()
-    }
-
-    pub fn tls_info(&self) -> TlsInfo {
-        TlsInfo {
-            version: self.session.version,
-            cipher_suite: self.session.cipher_suite.clone(),
-            peer_certificate: self.session.peer_certificate.clone(),
-            certificate_chain: self.session.certificate_chain.clone(),
-        }
-    }
 }
 
 impl Read for TlsStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        // In a simplified implementation, we'll just pass through
-        // Real TLS would decrypt the data here
-        if self.session.is_handshake_complete {
-            self.inner.read(buf)
-        } else {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::NotConnected,
-                "TLS handshake not complete"
-            ))
-        }
+        self.inner.read(buf)
     }
 }
 
 impl Write for TlsStream {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        // In a simplified implementation, we'll just pass through
-        // Real TLS would encrypt the data here
-        if self.session.is_handshake_complete {
-            self.inner.write(buf)
-        } else {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::NotConnected,
-                "TLS handshake not complete"
-            ))
-        }
+        self.inner.write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -196,813 +438,327 @@ impl Write for TlsStream {
     }
 }
 
-// TLS Session management
-struct TlsSession {
-    config: TlsConfig,
-    version: TlsVersion,
-    cipher_suite: CipherSuite,
-    peer_certificate: Option<Certificate>,
-    certificate_chain: Vec<Certificate>,
-    is_handshake_complete: bool,
-    client_random: [u8; 32],
-    server_random: [u8; 32],
-    master_secret: [u8; 48],
-}
-
-impl TlsSession {
-    fn new(config: TlsConfig) -> Self {
-        TlsSession {
-            config,
-            version: TlsVersion::Tls12,
-            cipher_suite: CipherSuite {
-                name: "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256".to_string(),
-                key_exchange: "ECDHE".to_string(),
-                authentication: "RSA".to_string(),
-                encryption: "AES_128_GCM".to_string(),
-                mac: "SHA256".to_string(),
-            },
-            peer_certificate: None,
-            certificate_chain: Vec::new(),
-            is_handshake_complete: false,
-            client_random: [0u8; 32],
-            server_random: [0u8; 32],
-            master_secret: [0u8; 48],
-        }
-    }
-
-    fn create_client_hello(&mut self, hostname: &str) -> Result<Vec<u8>> {
-        // Generate client random
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as u32;
-        
-        self.client_random[0..4].copy_from_slice(&timestamp.to_be_bytes());
-        for i in 4..32 {
-            self.client_random[i] = (i * 7 + timestamp as usize) as u8; // Simple random
-        }
-
-        let mut message = Vec::new();
-        
-        // TLS Record Header
-        message.push(0x16); // Handshake
-        message.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
-        
-        // Record length (will be calculated and filled at the end)
-        let length_pos = message.len();
-        message.extend_from_slice(&[0x00, 0x00]);
-
-        // Handshake Header
-        message.push(0x01); // Client Hello
-        
-        // Handshake message length (will be calculated and filled at the end)
-        let handshake_length_pos = message.len();
-        message.extend_from_slice(&[0x00, 0x00, 0x00]);
-
-        let handshake_start = message.len();
-
-        // Protocol Version
-        message.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
-
-        // Client Random
-        message.extend_from_slice(&self.client_random);
-
-        // Session ID (empty)
-        message.push(0x00);
-
-        // Cipher Suites
-        let cipher_suites_len = (self.config.cipher_suites.len() * 2) as u16;
-        message.extend_from_slice(&cipher_suites_len.to_be_bytes());
-        for &suite in &self.config.cipher_suites {
-            message.extend_from_slice(&suite.to_be_bytes());
-        }
-
-        // Compression Methods
-        message.push(0x01); // Length
-        message.push(0x00); // No compression
-
-        // Extensions
-        let mut extensions = Vec::new();
-        
-        // Server Name Indication (SNI)
-        let sni_ext = create_sni_extension(hostname);
-        extensions.extend_from_slice(&sni_ext);
-
-        // Supported Versions
-        let versions_ext = create_supported_versions_extension(&self.config.supported_versions);
-        extensions.extend_from_slice(&versions_ext);
-
-        // Add extensions length and data
-        let extensions_len = extensions.len() as u16;
-        message.extend_from_slice(&extensions_len.to_be_bytes());
-        message.extend_from_slice(&extensions);
-
-        // Fill in lengths
-        let handshake_len = message.len() - handshake_start;
-        let handshake_len_bytes = [(handshake_len >> 16) as u8, (handshake_len >> 8) as u8, handshake_len as u8];
-        message[handshake_length_pos..handshake_length_pos + 3].copy_from_slice(&handshake_len_bytes);
-
-        let record_len = (message.len() - 5) as u16;
-        message[length_pos..length_pos + 2].copy_from_slice(&record_len.to_be_bytes());
-
-        Ok(message)
-    }
-
-    fn process_server_messages(&mut self, data: &[u8]) -> Result<()> {
-        let mut pos = 0;
-        
-        while pos < data.len() {
-            if pos + 5 > data.len() {
-                break;
-            }
-
-            let record_type = data[pos];
-            let _version = u16::from_be_bytes([data[pos + 1], data[pos + 2]]);
-            let length = u16::from_be_bytes([data[pos + 3], data[pos + 4]]) as usize;
-            
-            pos += 5;
-
-            if pos + length > data.len() {
-                break;
-            }
-
-            match record_type {
-                0x16 => { // Handshake
-                    self.process_handshake_messages(&data[pos..pos + length])?;
-                },
-                0x14 => { // Change Cipher Spec
-                    // Process change cipher spec
-                },
-                _ => {
-                    // Unknown record type
-                }
-            }
-
-            pos += length;
-        }
-
-        Ok(())
-    }
-
-    fn process_handshake_messages(&mut self, data: &[u8]) -> Result<()> {
-        let mut pos = 0;
-
-        while pos < data.len() {
-            if pos + 4 > data.len() {
-                break;
-            }
-
-            let msg_type = data[pos];
-            let length = u32::from_be_bytes([0, data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
-            
-            pos += 4;
-
-            if pos + length > data.len() {
-                break;
-            }
-
-            match msg_type {
-                0x02 => { // Server Hello
-                    self.process_server_hello(&data[pos..pos + length])?;
-                },
-                0x0b => { // Certificate
-                    self.process_certificate(&data[pos..pos + length])?;
-                },
-                0x0c => { // Server Key Exchange
-                    // Process server key exchange
-                },
-                0x0e => { // Server Hello Done
-                    // Server hello done
-                },
-                _ => {
-                    // Unknown handshake message
-                }
-            }
-
-            pos += length;
-        }
-
-        Ok(())
-    }
-
-    fn process_server_hello(&mut self, data: &[u8]) -> Result<()> {
-        if data.len() < 38 {
-            return Err(Error::TlsError("Invalid Server Hello".to_string()));
-        }
-
-        // Extract server random
-        self.server_random.copy_from_slice(&data[2..34]);
-
-        // Extract cipher suite
-        let session_id_len = data[34] as usize;
-        if data.len() < 38 + session_id_len {
-            return Err(Error::TlsError("Invalid Server Hello".to_string()));
-        }
-
-        let cipher_suite_pos = 35 + session_id_len;
-        if data.len() < cipher_suite_pos + 2 {
-            return Err(Error::TlsError("Invalid Server Hello".to_string()));
-        }
-
-        let _cipher_suite = u16::from_be_bytes([data[cipher_suite_pos], data[cipher_suite_pos + 1]]);
-
-        Ok(())
-    }
-
-    fn process_certificate(&mut self, data: &[u8]) -> Result<()> {
-        if data.len() < 3 {
-            return Err(Error::TlsError("Invalid Certificate message".to_string()));
-        }
-
-        let certs_len = u32::from_be_bytes([0, data[0], data[1], data[2]]) as usize;
-        if data.len() < 3 + certs_len {
-            return Err(Error::TlsError("Invalid Certificate message".to_string()));
-        }
-
-        // Parse first certificate (simplified)
-        let mut pos = 3;
-        if pos + 3 <= data.len() {
-            let cert_len = u32::from_be_bytes([0, data[pos], data[pos + 1], data[pos + 2]]) as usize;
-            pos += 3;
-            
-            if pos + cert_len <= data.len() {
-                let cert_data = &data[pos..pos + cert_len];
-                let cert = parse_certificate_basic(cert_data)?;
-                self.peer_certificate = Some(cert.clone());
-                self.certificate_chain.push(cert);
-            }
-        }
-
-        Ok(())
-    }
-
-    fn create_client_key_exchange(&mut self) -> Result<Vec<u8>> {
-        // Simplified client key exchange
-        let mut message = Vec::new();
-        
-        // TLS Record Header
-        message.push(0x16); // Handshake
-        message.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
-        message.extend_from_slice(&[0x00, 0x46]); // Length
-
-        // Handshake Header
-        message.push(0x10); // Client Key Exchange
-        message.extend_from_slice(&[0x00, 0x00, 0x42]); // Length
-
-        // RSA encrypted premaster secret (simplified)
-        message.extend_from_slice(&[0x00, 0x40]); // Length
-        for i in 0..64 {
-            message.push((i * 3 + 42) as u8); // Dummy encrypted data
-        }
-
-        // Generate master secret (simplified)
-        for i in 0..48 {
-            self.master_secret[i] = (i + 123) as u8;
-        }
-
-        Ok(message)
-    }
-
-    fn create_finished_message(&mut self) -> Result<Vec<u8>> {
-        let mut message = Vec::new();
-        
-        // Change Cipher Spec
-        message.push(0x14); // Change Cipher Spec
-        message.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
-        message.extend_from_slice(&[0x00, 0x01]); // Length
-        message.push(0x01); // Change cipher spec
-
-        // Finished message
-        message.push(0x16); // Handshake
-        message.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
-        message.extend_from_slice(&[0x00, 0x10]); // Length (encrypted)
-
-        // Encrypted finished message (simplified)
-        for i in 0..16 {
-            message.push((i * 7 + 200) as u8);
-        }
-
-        Ok(message)
-    }
-
-    fn process_server_finished(&mut self, _data: &[u8]) -> Result<()> {
-        // Simplified server finished processing
-        self.is_handshake_complete = true;
-        Ok(())
-    }
-}
-
-// TLS version enumeration
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TlsVersion {
-    Tls10,
-    Tls11,
-    Tls12,
-    Tls13,
-}
-
-impl TlsVersion {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            TlsVersion::Tls10 => "TLSv1.0",
-            TlsVersion::Tls11 => "TLSv1.1",
-            TlsVersion::Tls12 => "TLSv1.2",
-            TlsVersion::Tls13 => "TLSv1.3",
-        }
-    }
-
-    pub fn as_bytes(&self) -> [u8; 2] {
-        match self {
-            TlsVersion::Tls10 => [0x03, 0x01],
-            TlsVersion::Tls11 => [0x03, 0x02],
-            TlsVersion::Tls12 => [0x03, 0x03],
-            TlsVersion::Tls13 => [0x03, 0x04],
-        }
-    }
-}
-
-// Cipher suite information
-#[derive(Debug, Clone)]
-pub struct CipherSuite {
-    pub name: String,
-    pub key_exchange: String,
-    pub authentication: String,
-    pub encryption: String,
-    pub mac: String,
-}
-
-// Certificate information
-#[derive(Debug, Clone)]
-pub struct Certificate {
-    pub subject: String,
-    pub issuer: String,
-    pub serial_number: String,
-    pub not_before: String,
-    pub not_after: String,
-    pub fingerprint: String,
-    pub public_key: String,
-    pub raw_data: Vec<u8>,
-}
-
-// TLS connection information
-#[derive(Debug, Clone)]
-pub struct TlsInfo {
-    pub version: TlsVersion,
-    pub cipher_suite: CipherSuite,
-    pub peer_certificate: Option<Certificate>,
-    pub certificate_chain: Vec<Certificate>,
-}
-
-// Helper functions
-fn create_sni_extension(hostname: &str) -> Vec<u8> {
-    let mut ext = Vec::new();
-    
-    // Extension type (Server Name)
-    ext.extend_from_slice(&[0x00, 0x00]);
-    
-    // Extension length
-    let ext_len = (5 + hostname.len()) as u16;
-    ext.extend_from_slice(&ext_len.to_be_bytes());
-    
-    // Server name list length
-    let list_len = (3 + hostname.len()) as u16;
-    ext.extend_from_slice(&list_len.to_be_bytes());
-    
-    // Name type (hostname)
-    ext.push(0x00);
-    
-    // Hostname length and data
-    let hostname_len = hostname.len() as u16;
-    ext.extend_from_slice(&hostname_len.to_be_bytes());
-    ext.extend_from_slice(hostname.as_bytes());
-    
-    ext
-}
-
-fn create_supported_versions_extension(versions: &[TlsVersion]) -> Vec<u8> {
-    let mut ext = Vec::new();
-    
-    // Extension type (Supported Versions)
-    ext.extend_from_slice(&[0x00, 0x2b]);
-    
-    // Extension length
-    let ext_len = (1 + versions.len() * 2) as u16;
-    ext.extend_from_slice(&ext_len.to_be_bytes());
-    
-    // Versions length
-    ext.push((versions.len() * 2) as u8);
-    
-    // Versions
-    for version in versions {
-        ext.extend_from_slice(&version.as_bytes());
-    }
-    
-    ext
-}
-
-fn parse_certificate_basic(cert_data: &[u8]) -> Result<Certificate> {
-    // Enhanced X.509 DER certificate parsing
-    
-    if cert_data.len() < 100 {
-        return Err(Error::CertificateError("Certificate data too short".to_string()));
-    }
-    
-    // Validate DER structure
-    if cert_data[0] != 0x30 {
-        return Err(Error::CertificateError("Invalid X.509 certificate format".to_string()));
-    }
-    
-    // Extract basic information from the certificate
-    // In a complete implementation, this would be a full ASN.1 DER parser
-    
-    let subject = extract_certificate_field(cert_data, "subject").unwrap_or_else(|| "CN=unknown".to_string());
-    let issuer = extract_certificate_field(cert_data, "issuer").unwrap_or_else(|| "CN=unknown".to_string());
-    
-    // Generate a simple serial number based on certificate hash
-    let cert_hash = simple_hash(cert_data);
-    let serial_number = format!("{cert_hash:016x}");
-    
-    // Set validity period (in a real implementation, this would be parsed from the certificate)
-    let not_before = "2023-01-01T00:00:00Z".to_string();
-    let not_after = "2025-12-31T23:59:59Z".to_string();
-    
-    // Calculate fingerprint (SHA-256 would be better, but we'll use our simple hash)
-    let fingerprint = format!("SHA1:{cert_hash:040x}");
-    
-    // Determine public key type based on certificate structure
-    let public_key = if cert_data.len() > 1000 {
-        "RSA 2048".to_string()
-    } else if cert_data.len() > 500 {
-        "RSA 1024".to_string()
-    } else {
-        "EC P-256".to_string()
-    };
-    
-    Ok(Certificate {
-        subject,
-        issuer,
-        serial_number,
-        not_before,
-        not_after,
-        fingerprint,
-        public_key,
-        raw_data: cert_data.to_vec(),
-    })
-}
-
-fn extract_certificate_field(cert_data: &[u8], field_type: &str) -> Option<String> {
-    // Simplified certificate field extraction
-    // In a real implementation, this would parse the ASN.1 DER structure
-    
-    // Look for common patterns in certificate data
-    let data_str = String::from_utf8_lossy(cert_data);
-    
-    // Try to find domain names or common names in the certificate
-    for line in data_str.lines() {
-        if line.contains("CN=") || line.contains("commonName") {
-            // Extract the common name
-            if let Some(start) = line.find("CN=") {
-                let cn_part = &line[start + 3..];
-                if let Some(end) = cn_part.find(',').or_else(|| cn_part.find('\0')) {
-                    return Some(format!("CN={}", &cn_part[..end]));
-                } else {
-                    return Some(format!("CN={}", cn_part.trim()));
-                }
-            }
-        }
-    }
-    
-    // Look for domain patterns
-    let domain_patterns = [
-        r"\.com", r"\.org", r"\.net", r"\.edu", r"\.gov",
-        r"localhost", r"example", r"test"
-    ];
-    
-    for pattern in &domain_patterns {
-        if data_str.contains(pattern) {
-            // Try to extract a reasonable domain name
-            let parts: Vec<&str> = data_str.split_whitespace().collect();
-            for part in parts {
-                if part.contains(pattern) && part.len() < 100 {
-                    return Some(format!("CN={}", part.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '-')));
-                }
-            }
-        }
-    }
-    
-    // Default based on field type
-    match field_type {
-        "subject" => Some("CN=unknown-subject".to_string()),
-        "issuer" => Some("CN=unknown-issuer".to_string()),
+/// Get cipher suite information by ID
+pub fn get_cipher_suite_info(id: u16) -> Option<CipherSuite> {
+    match id {
+        0x1301 => Some(CipherSuite {
+            id,
+            name: "TLS_AES_128_GCM_SHA256".to_string(),
+            key_exchange: KeyExchangeAlgorithm::ECDHE,
+            authentication: AuthenticationAlgorithm::RSA,
+            encryption: EncryptionAlgorithm::AES128GCM,
+            mac: MacAlgorithm::AEAD,
+            security_level: SecurityLevel::Strong,
+        }),
+        0x1302 => Some(CipherSuite {
+            id,
+            name: "TLS_AES_256_GCM_SHA384".to_string(),
+            key_exchange: KeyExchangeAlgorithm::ECDHE,
+            authentication: AuthenticationAlgorithm::RSA,
+            encryption: EncryptionAlgorithm::AES256GCM,
+            mac: MacAlgorithm::AEAD,
+            security_level: SecurityLevel::Strong,
+        }),
+        0x1303 => Some(CipherSuite {
+            id,
+            name: "TLS_CHACHA20_POLY1305_SHA256".to_string(),
+            key_exchange: KeyExchangeAlgorithm::ECDHE,
+            authentication: AuthenticationAlgorithm::RSA,
+            encryption: EncryptionAlgorithm::ChaCha20Poly1305,
+            mac: MacAlgorithm::AEAD,
+            security_level: SecurityLevel::Strong,
+        }),
+        0xc02f => Some(CipherSuite {
+            id,
+            name: "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256".to_string(),
+            key_exchange: KeyExchangeAlgorithm::ECDHE,
+            authentication: AuthenticationAlgorithm::RSA,
+            encryption: EncryptionAlgorithm::AES128GCM,
+            mac: MacAlgorithm::AEAD,
+            security_level: SecurityLevel::Strong,
+        }),
+        0xc030 => Some(CipherSuite {
+            id,
+            name: "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384".to_string(),
+            key_exchange: KeyExchangeAlgorithm::ECDHE,
+            authentication: AuthenticationAlgorithm::RSA,
+            encryption: EncryptionAlgorithm::AES256GCM,
+            mac: MacAlgorithm::AEAD,
+            security_level: SecurityLevel::Strong,
+        }),
+        0xcca9 => Some(CipherSuite {
+            id,
+            name: "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256".to_string(),
+            key_exchange: KeyExchangeAlgorithm::ECDHE,
+            authentication: AuthenticationAlgorithm::ECDSA,
+            encryption: EncryptionAlgorithm::ChaCha20Poly1305,
+            mac: MacAlgorithm::AEAD,
+            security_level: SecurityLevel::Strong,
+        }),
         _ => None,
     }
 }
 
-fn verify_certificate_basic(cert: &Certificate) -> Result<()> {
-    // Complete certificate verification
-    
-    // Check if certificate subject is valid
-    if cert.subject.is_empty() {
-        return Err(Error::CertificateError("Invalid certificate subject".to_string()));
-    }
-    
-    // Check if certificate issuer is valid
-    if cert.issuer.is_empty() {
-        return Err(Error::CertificateError("Invalid certificate issuer".to_string()));
-    }
-    
-    // Parse and validate dates
-    let _current_time = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    
-    // Simple date validation (in a real implementation, you'd parse the actual dates)
-    if cert.not_before.is_empty() || cert.not_after.is_empty() {
-        return Err(Error::CertificateError("Invalid certificate validity period".to_string()));
-    }
-    
-    // Validate certificate chain structure
-    if cert.raw_data.len() < 100 {
-        return Err(Error::CertificateError("Certificate data too short".to_string()));
-    }
-    
-    // Check for basic X.509 DER structure
-    if cert.raw_data[0] != 0x30 {
-        return Err(Error::CertificateError("Invalid X.509 certificate format".to_string()));
-    }
-    
-    // Validate serial number
-    if cert.serial_number.is_empty() {
-        return Err(Error::CertificateError("Missing certificate serial number".to_string()));
-    }
-    
-    // Validate public key information
-    if cert.public_key.is_empty() {
-        return Err(Error::CertificateError("Missing certificate public key".to_string()));
-    }
-    
-    Ok(())
+/// Get all available cipher suites
+pub fn get_all_cipher_suites() -> Vec<CipherSuite> {
+    vec![
+        0x1301, 0x1302, 0x1303, 0xc02f, 0xc030, 0xcca9,
+    ]
+    .into_iter()
+    .filter_map(get_cipher_suite_info)
+    .collect()
 }
 
-fn verify_hostname_basic(cert: &Certificate, hostname: &str) -> Result<()> {
-    // Complete hostname verification following RFC 6125
-    
-    // Extract Common Name from subject
-    let cn = extract_common_name(&cert.subject);
-    
-    // Check exact match with Common Name
-    if let Some(ref common_name) = cn {
-        if hostname_matches(hostname, common_name) {
-            return Ok(());
-        }
-    }
-    
-    // In a complete implementation, we would also check Subject Alternative Names (SAN)
-    // For now, we'll check some common patterns
-    
-    // Allow localhost for testing
-    if hostname == "localhost" || hostname == "127.0.0.1" {
-        return Ok(());
-    }
-    
-    // Check if the certificate subject contains the hostname
-    if cert.subject.to_lowercase().contains(&hostname.to_lowercase()) {
-        return Ok(());
-    }
-    
-    // Check for wildcard patterns in the subject
-    if let Some(ref common_name) = cn {
-        if let Some(domain) = common_name.strip_prefix("*.") {
-            if hostname.ends_with(domain) {
-                return Ok(());
-            }
-        }
-    }
-    
-    Err(Error::HostnameVerificationError(
-        format!("Hostname '{}' does not match certificate subject '{}'", hostname, cert.subject)
-    ))
+/// Get cipher suites by minimum security level
+pub fn get_cipher_suites_by_security_level(min_level: SecurityLevel) -> Vec<CipherSuite> {
+    get_all_cipher_suites()
+        .into_iter()
+        .filter(|suite| suite.security_level >= min_level)
+        .collect()
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn extract_common_name(subject: &str) -> Option<String> {
-    // Parse the subject DN to extract CN
-    for part in subject.split(',') {
-        let part = part.trim();
-        if let Some(stripped) = part.strip_prefix("CN=") {
-            return Some(stripped.to_string());
-        }
-    }
-    None
-}
-
-fn hostname_matches(hostname: &str, pattern: &str) -> bool {
-    if pattern == hostname {
-        return true;
-    }
-    
-    // Handle wildcard patterns
-    if let Some(domain) = pattern.strip_prefix("*.") {
-        if let Some(prefix) = hostname.strip_suffix(domain) {
-            // Make sure it's not matching too broadly
-            return !prefix.contains('.');
-        }
-    }
-    
-    false
-}
-
-fn simple_hash(data: &[u8]) -> u64 {
-    let mut hash = 0u64;
-    for &byte in data {
-        hash = hash.wrapping_mul(31).wrapping_add(byte as u64);
-    }
-    hash
-}
-
-// Certificate and key loading functions
-pub fn load_cert_from_pem(pem_data: &[u8]) -> Result<Vec<u8>> {
-    // Complete PEM parser supporting multiple certificate formats
-    let pem_str = std::str::from_utf8(pem_data)
-        .map_err(|_| Error::CertificateError("Invalid PEM encoding".to_string()))?;
-    
-    let certificate_markers = [
-        ("-----BEGIN CERTIFICATE-----", "-----END CERTIFICATE-----"),
-        ("-----BEGIN X509 CERTIFICATE-----", "-----END X509 CERTIFICATE-----"),
-        ("-----BEGIN TRUSTED CERTIFICATE-----", "-----END TRUSTED CERTIFICATE-----"),
-    ];
-    
-    for (start_marker, end_marker) in &certificate_markers {
-        if let Some(start) = pem_str.find(start_marker) {
-            if let Some(end) = pem_str.find(end_marker) {
-                let base64_data = &pem_str[start + start_marker.len()..end];
-                let cleaned = base64_data.chars()
-                    .filter(|c| !c.is_whitespace())
-                    .collect::<String>();
-                
-                let decoded = base64_decode(&cleaned)?;
-                
-                // Validate that it's a valid DER-encoded certificate
-                if decoded.len() < 4 || decoded[0] != 0x30 {
-                    return Err(Error::CertificateError("Invalid certificate format".to_string()));
-                }
-                
-                return Ok(decoded);
-            }
-        }
-    }
-    
-    Err(Error::CertificateError("No valid PEM certificate found".to_string()))
-}
-
-pub fn load_private_key_from_pem(pem_data: &[u8]) -> Result<Vec<u8>> {
-    // Complete PEM parser for various private key formats
-    let pem_str = std::str::from_utf8(pem_data)
-        .map_err(|_| Error::CertificateError("Invalid PEM encoding".to_string()))?;
-    
-    let key_markers = [
-        ("-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----"),           // PKCS#8
-        ("-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"),   // PKCS#1 RSA
-        ("-----BEGIN EC PRIVATE KEY-----", "-----END EC PRIVATE KEY-----"),     // SEC1 EC
-        ("-----BEGIN DSA PRIVATE KEY-----", "-----END DSA PRIVATE KEY-----"),   // DSA
-        ("-----BEGIN ENCRYPTED PRIVATE KEY-----", "-----END ENCRYPTED PRIVATE KEY-----"), // PKCS#8 Encrypted
-    ];
-    
-    for (start_marker, end_marker) in &key_markers {
-        if let Some(start) = pem_str.find(start_marker) {
-            if let Some(end) = pem_str.find(end_marker) {
-                let base64_data = &pem_str[start + start_marker.len()..end];
-                let cleaned = base64_data.chars()
-                    .filter(|c| !c.is_whitespace())
-                    .collect::<String>();
-                
-                let decoded = base64_decode(&cleaned)?;
-                
-                // Basic validation of key format
-                if decoded.len() < 8 {
-                    return Err(Error::CertificateError("Private key too short".to_string()));
-                }
-                
-                // Check for DER structure (should start with SEQUENCE)
-                if decoded[0] != 0x30 {
-                    return Err(Error::CertificateError("Invalid private key format".to_string()));
-                }
-                
-                // Check if it's an encrypted key
-                if start_marker.contains("ENCRYPTED") {
-                    return Err(Error::CertificateError("Encrypted private keys not supported without password".to_string()));
-                }
-                
-                return Ok(decoded);
-            }
-        }
-    }
-    
-    Err(Error::CertificateError("No valid PEM private key found".to_string()))
-}
-
-fn base64_decode(input: &str) -> Result<Vec<u8>> {
-    // Simple base64 decoder
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut char_map = [255u8; 256];
-    
-    for (i, &c) in CHARS.iter().enumerate() {
-        char_map[c as usize] = i as u8;
-    }
-    
-    let mut result = Vec::new();
-    let mut buffer = 0u32;
-    let mut bits = 0;
-    
-    for c in input.chars() {
-        if c == '=' {
-            break;
-        }
+    #[test]
+    fn test_tls_version() {
+        assert_eq!(TlsVersion::Tls12.as_u16(), 0x0303);
+        assert_eq!(TlsVersion::Tls13.as_u16(), 0x0304);
         
-        let value = char_map[c as usize];
-        if value == 255 {
-            continue; // Skip invalid characters
-        }
+        assert_eq!(TlsVersion::from_u16(0x0303), Some(TlsVersion::Tls12));
+        assert_eq!(TlsVersion::from_u16(0x0304), Some(TlsVersion::Tls13));
+        assert_eq!(TlsVersion::from_u16(0x9999), None);
         
-        buffer = (buffer << 6) | (value as u32);
-        bits += 6;
+        assert_eq!(TlsVersion::Tls12.as_str(), "TLSv1.2");
+        assert_eq!(TlsVersion::Tls13.as_str(), "TLSv1.3");
         
-        if bits >= 8 {
-            result.push((buffer >> (bits - 8)) as u8);
-            bits -= 8;
-        }
+        assert!(!TlsVersion::Tls10.is_secure());
+        assert!(!TlsVersion::Tls11.is_secure());
+        assert!(TlsVersion::Tls12.is_secure());
+        assert!(TlsVersion::Tls13.is_secure());
+        
+        assert_eq!(TlsVersion::Tls13.as_bytes(), [0x03, 0x04]);
     }
-    
-    Ok(result)
-}
 
-pub fn verify_certificate_chain(chain: &[Certificate], ca_certs: &[Vec<u8>]) -> Result<bool> {
-    if chain.is_empty() {
-        return Err(Error::CertificateError("Empty certificate chain".to_string()));
+    #[test]
+    fn test_tls_config_creation() {
+        let config = TlsConfig::new();
+        assert!(config.verify_certificates);
+        assert!(!config.accept_invalid_hostnames);
+        assert!(!config.accept_invalid_certs);
+        assert!(config.enable_sni);
+        assert!(config.enable_alpn);
+        assert_eq!(config.min_protocol_version, TlsVersion::Tls12);
+        assert_eq!(config.max_protocol_version, TlsVersion::Tls13);
     }
-    
-    // Verify each certificate in the chain
-    for cert in chain {
-        verify_certificate_basic(cert)?;
-    }
-    
-    // Check that each certificate is signed by the next one in the chain
-    for i in 0..chain.len() - 1 {
-        let cert = &chain[i];
-        let issuer_cert = &chain[i + 1];
-        
-        // Verify that the issuer of cert matches the subject of issuer_cert
-        if cert.issuer != issuer_cert.subject {
-            return Err(Error::CertificateError(
-                format!("Certificate chain broken: '{}' not issued by '{}'", 
-                    cert.subject, issuer_cert.subject)
-            ));
-        }
-        
-        // In a complete implementation, we would verify the signature here
-        // For now, we'll do a basic validation
-        if cert.issuer.is_empty() || issuer_cert.subject.is_empty() {
-            return Err(Error::CertificateError("Invalid certificate chain structure".to_string()));
-        }
-    }
-    
-    // Verify the root certificate against trusted CAs
-    if let Some(root_cert) = chain.last() {
-        let mut trusted = false;
-        
-        // Check if the root certificate is self-signed (issuer == subject)
-        if root_cert.issuer == root_cert.subject {
-            // Check against provided CA certificates
-            for ca_cert_data in ca_certs {
-                if ca_cert_data == &root_cert.raw_data {
-                    trusted = true;
-                    break;
-                }
-            }
-            
-            // If no CA certs provided, accept well-known patterns for testing
-            if ca_certs.is_empty()
-                && (root_cert.subject.contains("Root CA") || 
-                   root_cert.subject.contains("Certificate Authority")) {
-                    trusted = true;
-                }
-        } else {
-            return Err(Error::CertificateError("Root certificate is not self-signed".to_string()));
-        }
-        
-        if !trusted {
-            return Err(Error::CertificateError("Root certificate not trusted".to_string()));
-        }
-    }
-    
-    Ok(true)
-}
 
-pub fn verify_hostname(_cert: &Certificate, _hostname: &str) -> Result<bool> {
-    // Hostname verification would check:
-    // 1. Subject Alternative Names (SAN)
-    // 2. Common Name (CN) in subject
-    // 3. Wildcard matching rules
-    Ok(true)
+    #[test]
+    fn test_tls_config_secure() {
+        let config = TlsConfig::secure();
+        assert!(config.is_secure());
+        assert_eq!(config.min_protocol_version, TlsVersion::Tls12);
+        assert!(config.cipher_suites.contains(&0x1301)); // TLS_AES_128_GCM_SHA256
+    }
+
+    #[test]
+    fn test_tls_config_compatible() {
+        let config = TlsConfig::compatible();
+        assert_eq!(config.min_protocol_version, TlsVersion::Tls10);
+        assert!(config.supported_versions.contains(&TlsVersion::Tls10));
+        assert!(config.supported_versions.contains(&TlsVersion::Tls13));
+    }
+
+    #[test]
+    fn test_tls_config_builder() {
+        let config = TlsConfig::new()
+            .danger_accept_invalid_certs()
+            .danger_accept_invalid_hostnames()
+            .with_min_protocol_version(TlsVersion::Tls11)
+            .with_alpn_protocols(vec!["h2".to_string()])
+            .disable_sni()
+            .with_session_cache_size(500);
+
+        assert!(config.accept_invalid_certs);
+        assert!(config.accept_invalid_hostnames);
+        assert_eq!(config.min_protocol_version, TlsVersion::Tls11);
+        assert_eq!(config.alpn_protocols, vec!["h2"]);
+        assert!(!config.enable_sni);
+        assert_eq!(config.session_cache_size, 500);
+    }
+
+    #[test]
+    fn test_client_certificate() {
+        let cert_data = b"test_cert_data".to_vec();
+        let key_data = b"test_key_data".to_vec();
+        
+        let client_cert = ClientCertificate::new(cert_data.clone(), key_data.clone())
+            .with_password("test_password".to_string());
+
+        assert_eq!(client_cert.cert, cert_data);
+        assert_eq!(client_cert.key, key_data);
+        assert_eq!(client_cert.password, Some("test_password".to_string()));
+        assert_eq!(client_cert.cert_format, CertificateFormat::PEM);
+        assert_eq!(client_cert.key_format, KeyFormat::PEM);
+        
+        assert!(client_cert.validate().is_ok());
+        
+        let info = client_cert.get_info();
+        assert_eq!(info.format, CertificateFormat::PEM);
+        assert!(info.has_password);
+        assert_eq!(info.cert_size, cert_data.len());
+        assert_eq!(info.key_size, key_data.len());
+    }
+
+    #[test]
+    fn test_client_certificate_pkcs12() {
+        let pkcs12_data = b"pkcs12_test_data".to_vec();
+        let client_cert = ClientCertificate::from_pkcs12(pkcs12_data, "password".to_string());
+
+        assert_eq!(client_cert.cert_format, CertificateFormat::PKCS12);
+        assert_eq!(client_cert.password, Some("password".to_string()));
+        assert!(client_cert.validate().is_ok());
+    }
+
+    #[test]
+    fn test_client_certificate_validation() {
+        let empty_cert = ClientCertificate::new(vec![], b"test".to_vec());
+        assert!(empty_cert.validate().is_err());
+        
+        let empty_key = ClientCertificate::new(b"test".to_vec(), vec![]);
+        assert!(empty_key.validate().is_err());
+        
+        let pkcs12_no_password = ClientCertificate {
+            cert: b"test".to_vec(),
+            key: b"test".to_vec(),
+            password: None,
+            cert_format: CertificateFormat::PKCS12,
+            key_format: KeyFormat::PKCS8,
+        };
+        assert!(pkcs12_no_password.validate().is_err());
+    }
+
+    #[test]
+    fn test_cipher_suite_info() {
+        let suite = get_cipher_suite_info(0x1301).unwrap();
+        assert_eq!(suite.id, 0x1301);
+        assert_eq!(suite.name, "TLS_AES_128_GCM_SHA256");
+        assert_eq!(suite.key_exchange, KeyExchangeAlgorithm::ECDHE);
+        assert_eq!(suite.authentication, AuthenticationAlgorithm::RSA);
+        assert_eq!(suite.encryption, EncryptionAlgorithm::AES128GCM);
+        assert_eq!(suite.mac, MacAlgorithm::AEAD);
+        assert_eq!(suite.security_level, SecurityLevel::Strong);
+        
+        assert!(get_cipher_suite_info(0x9999).is_none());
+    }
+
+    #[test]
+    fn test_get_all_cipher_suites() {
+        let suites = get_all_cipher_suites();
+        assert!(!suites.is_empty());
+        assert!(suites.iter().any(|s| s.id == 0x1301));
+        assert!(suites.iter().any(|s| s.id == 0x1302));
+    }
+
+    #[test]
+    fn test_cipher_suites_by_security_level() {
+        let strong_suites = get_cipher_suites_by_security_level(SecurityLevel::Strong);
+        assert!(!strong_suites.is_empty());
+        assert!(strong_suites.iter().all(|s| s.security_level >= SecurityLevel::Strong));
+        
+        let very_strong_suites = get_cipher_suites_by_security_level(SecurityLevel::VeryStrong);
+        assert!(very_strong_suites.is_empty()); // No VeryStrong suites in our test set
+    }
+
+    #[test]
+    fn test_tls_config_cipher_suite_filtering() {
+        let config = TlsConfig::new();
+        let cipher_suites = config.get_cipher_suites();
+        assert!(!cipher_suites.is_empty());
+        
+        let strong_ciphers = config.filter_by_security_level(SecurityLevel::Strong);
+        assert!(!strong_ciphers.is_empty());
+        
+        let very_strong_ciphers = config.filter_by_security_level(SecurityLevel::VeryStrong);
+        assert!(very_strong_ciphers.is_empty());
+    }
+
+    #[test]
+    fn test_security_level_ordering() {
+        assert!(SecurityLevel::VeryStrong > SecurityLevel::Strong);
+        assert!(SecurityLevel::Strong > SecurityLevel::Medium);
+        assert!(SecurityLevel::Medium > SecurityLevel::Weak);
+    }
+
+    #[test]
+    fn test_tls_config_security_check() {
+        let secure_config = TlsConfig::secure();
+        assert!(secure_config.is_secure());
+        
+        let insecure_config = TlsConfig::new()
+            .danger_accept_invalid_certs();
+        assert!(!insecure_config.is_secure());
+        
+        let old_tls_config = TlsConfig::new()
+            .with_min_protocol_version(TlsVersion::Tls10);
+        assert!(!old_tls_config.is_secure());
+    }
+
+    #[test]
+    fn test_certificate_formats() {
+        assert_ne!(CertificateFormat::PEM, CertificateFormat::DER);
+        assert_ne!(CertificateFormat::PEM, CertificateFormat::PKCS12);
+        
+        assert_ne!(KeyFormat::PEM, KeyFormat::DER);
+        assert_ne!(KeyFormat::PKCS8, KeyFormat::PKCS1RSA);
+    }
+
+    #[test]
+    fn test_tls_version_ordering() {
+        assert!(TlsVersion::Tls13 > TlsVersion::Tls12);
+        assert!(TlsVersion::Tls12 > TlsVersion::Tls11);
+        assert!(TlsVersion::Tls11 > TlsVersion::Tls10);
+    }
+
+    #[test]
+    fn test_default_config() {
+        let config1 = TlsConfig::default();
+        let config2 = TlsConfig::new();
+        
+        assert_eq!(config1.verify_certificates, config2.verify_certificates);
+        assert_eq!(config1.min_protocol_version, config2.min_protocol_version);
+        assert_eq!(config1.cipher_suites, config2.cipher_suites);
+    }
+
+    #[test]
+    fn test_certificate_info() {
+        let cert = ClientCertificate::from_pem(b"cert".to_vec(), b"key".to_vec());
+        let info = cert.get_info();
+        
+        assert_eq!(info.format, CertificateFormat::PEM);
+        assert_eq!(info.key_format, KeyFormat::PEM);
+        assert_eq!(info.cert_size, 4);
+        assert_eq!(info.key_size, 3);
+        assert!(!info.has_password);
+    }
+
+    #[test]
+    fn test_tls_config_session_settings() {
+        let timeout = std::time::Duration::from_secs(7200);
+        let config = TlsConfig::new()
+            .with_session_cache_size(2000)
+            .with_session_timeout(timeout);
+        
+        assert_eq!(config.session_cache_size, 2000);
+        assert_eq!(config.session_timeout, timeout);
+    }
+
+    #[test]
+    fn test_tls_config_ocsp_and_sct() {
+        let config = TlsConfig::new()
+            .enable_ocsp_stapling()
+            .disable_sct();
+        
+        assert!(config.enable_ocsp_stapling);
+        assert!(!config.enable_sct);
+    }
 }

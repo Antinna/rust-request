@@ -2,10 +2,10 @@
 name = "request"
 version = "1.0.0"
 edition = "2021"
-authors = ["Advanced HTTP Client Team"]
+authors = ["Advanced HTTP Client Team from Antinna"]
 description = "A comprehensive HTTP client library built with only Rust standard library"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/example/request"
+repository = "https://github.com/antinna/rust-request"
 keywords = ["http", "client", "web", "api", "rest"]
 categories = ["web-programming::http-client", "network-programming"]
 

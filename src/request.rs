@@ -31,7 +31,7 @@ impl HttpStream for crate::tls::TlsStream {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Request {
     pub method: Method,
     pub url: Url,
@@ -47,6 +47,75 @@ impl Request {
             headers: HashMap::new(),
             body: None,
         }
+    }
+    
+    /// Get a header value
+    pub fn header(&self, name: &str) -> Option<&String> {
+        self.headers.get(name)
+    }
+    
+    /// Get a header value (case-insensitive)
+    pub fn header_ignore_case(&self, name: &str) -> Option<&String> {
+        let name_lower = name.to_lowercase();
+        self.headers.iter()
+            .find(|(k, _)| k.to_lowercase() == name_lower)
+            .map(|(_, v)| v)
+    }
+    
+    /// Check if request has a body
+    pub fn has_body(&self) -> bool {
+        self.body.is_some() && !self.body.as_ref().unwrap().is_empty()
+    }
+    
+    /// Get body size
+    pub fn body_size(&self) -> usize {
+        self.body.as_ref().map(|b| b.len()).unwrap_or(0)
+    }
+    
+    /// Get content type
+    pub fn content_type(&self) -> Option<&String> {
+        self.header_ignore_case("content-type")
+    }
+    
+    /// Check if request is secure (HTTPS)
+    pub fn is_secure(&self) -> bool {
+        self.url.is_secure()
+    }
+    
+    /// Get the full request line (for debugging)
+    pub fn request_line(&self) -> String {
+        format!("{} {} HTTP/1.1", self.method.as_str(), self.url.full_path())
+    }
+    
+    /// Convert to a debug-friendly string
+    pub fn to_debug_string(&self) -> String {
+        let mut debug = format!("{}\n", self.request_line());
+        debug.push_str(&format!("Host: {}\n", self.url.host));
+        
+        for (key, value) in &self.headers {
+            debug.push_str(&format!("{key}: {value}\n"));
+        }
+        
+        if let Some(ref body) = self.body {
+            debug.push('\n');
+            if body.len() > 1000 {
+                debug.push_str(&format!("[Body: {} bytes]", body.len()));
+            } else {
+                debug.push_str(&String::from_utf8_lossy(body));
+            }
+        }
+        
+        debug
+    }
+    
+    /// Clone the request
+    pub fn try_clone(&self) -> Result<Self> {
+        Ok(Request {
+            method: self.method,
+            url: self.url.clone(),
+            headers: self.headers.clone(),
+            body: self.body.clone(),
+        })
     }
 }
 
@@ -70,6 +139,67 @@ impl RequestBuilder {
             body: None,
             client,
         }
+    }
+    
+    /// Validate the request before sending
+    pub fn validate(&self) -> Result<()> {
+        // Validate URL
+        Url::parse(&self.url)?;
+        
+        // Validate headers
+        for (key, value) in &self.headers {
+            if key.is_empty() {
+                return Err(Error::InvalidHeader("Header name cannot be empty".to_string()));
+            }
+            if value.contains('\n') || value.contains('\r') {
+                return Err(Error::InvalidHeader("Header value cannot contain newlines".to_string()));
+            }
+        }
+        
+        // Validate body size
+        if let Some(ref body) = self.body {
+            if let Some(max_size) = self.client.max_response_size {
+                if body.len() > max_size {
+                    return Err(Error::ValidationError(
+                        format!("Request body size {} exceeds maximum {}", body.len(), max_size)
+                    ));
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Get the estimated request size
+    pub fn estimated_size(&self) -> usize {
+        let mut size = 0;
+        
+        // Method + URL + HTTP version
+        size += self.method.as_str().len() + self.url.len() + 20;
+        
+        // Headers
+        for (key, value) in &self.headers {
+            size += key.len() + value.len() + 4; // ": " + "\r\n"
+        }
+        
+        // Body
+        if let Some(ref body) = self.body {
+            size += body.len();
+        }
+        
+        size
+    }
+    
+    /// Clone the request builder
+    pub fn try_clone(&self) -> Result<Self> {
+        Ok(RequestBuilder {
+            method: self.method,
+            url: self.url.clone(),
+            headers: self.headers.clone(),
+            query_params: self.query_params.clone(),
+            body: self.body.clone(),
+            client: self.client.clone(),
+        })
     }
 
     pub fn from_request(request: Request, client: Client) -> Self {
@@ -191,9 +321,25 @@ impl RequestBuilder {
         self
     }
 
-    pub fn timeout(self, _timeout: std::time::Duration) -> Self {
-        // Store timeout in client for this request
-        // In a full implementation, this would override the client timeout
+    pub fn timeout(mut self, timeout: std::time::Duration) -> Self {
+        // Create a new client with the specific timeout for this request
+        let mut client = self.client.clone();
+        client.timeout = Some(timeout);
+        self.client = client;
+        self
+    }
+    
+    pub fn connect_timeout(mut self, timeout: std::time::Duration) -> Self {
+        let mut client = self.client.clone();
+        client.connect_timeout = Some(timeout);
+        self.client = client;
+        self
+    }
+    
+    pub fn read_timeout(mut self, timeout: std::time::Duration) -> Self {
+        let mut client = self.client.clone();
+        client.read_timeout = Some(timeout);
+        self.client = client;
         self
     }
 
@@ -229,6 +375,51 @@ impl RequestBuilder {
             "application/x-www-form-urlencoded".to_string(),
         );
         self.body = Some(form_data.into_bytes());
+        self
+    }
+    
+    pub fn query_params(mut self, params: HashMap<String, String>) -> Self {
+        self.query_params.extend(params);
+        self
+    }
+    
+    pub fn user_agent<S: Into<String>>(mut self, user_agent: S) -> Self {
+        self.headers.insert("User-Agent".to_string(), user_agent.into());
+        self
+    }
+    
+    pub fn accept<S: Into<String>>(mut self, accept: S) -> Self {
+        self.headers.insert("Accept".to_string(), accept.into());
+        self
+    }
+    
+    pub fn content_type<S: Into<String>>(mut self, content_type: S) -> Self {
+        self.headers.insert("Content-Type".to_string(), content_type.into());
+        self
+    }
+    
+    pub fn if_none_match<S: Into<String>>(mut self, etag: S) -> Self {
+        self.headers.insert("If-None-Match".to_string(), etag.into());
+        self
+    }
+    
+    pub fn if_modified_since<S: Into<String>>(mut self, date: S) -> Self {
+        self.headers.insert("If-Modified-Since".to_string(), date.into());
+        self
+    }
+    
+    pub fn range<S: Into<String>>(mut self, range: S) -> Self {
+        self.headers.insert("Range".to_string(), range.into());
+        self
+    }
+    
+    pub fn referer<S: Into<String>>(mut self, referer: S) -> Self {
+        self.headers.insert("Referer".to_string(), referer.into());
+        self
+    }
+    
+    pub fn origin<S: Into<String>>(mut self, origin: S) -> Self {
+        self.headers.insert("Origin".to_string(), origin.into());
         self
     }
 
@@ -482,7 +673,7 @@ impl RequestBuilder {
             .with_cookies(cookies);
 
         // Check for HTTP errors (but don't fail on redirects)
-        if !response.is_success() && !response.is_redirection() {
+        if !response.is_success() && !response.is_redirect() {
             return Err(Error::HttpError(
                 response.status,
                 response.status_text.clone(),
@@ -544,5 +735,127 @@ mod urlencoding {
             }
         }
         result
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Client;
+
+    #[test]
+    fn test_request_creation() {
+        let url = Url::parse("https://example.com/api").unwrap();
+        let request = Request::new(Method::GET, url);
+        
+        assert_eq!(request.method, Method::GET);
+        assert_eq!(request.url.host, "example.com");
+        assert!(!request.has_body());
+        assert_eq!(request.body_size(), 0);
+    }
+
+    #[test]
+    fn test_request_headers() {
+        let url = Url::parse("https://example.com").unwrap();
+        let mut request = Request::new(Method::GET, url);
+        
+        request.headers.insert("Content-Type".to_string(), "application/json".to_string());
+        request.headers.insert("Authorization".to_string(), "Bearer token".to_string());
+        
+        assert_eq!(request.header("Content-Type"), Some(&"application/json".to_string()));
+        assert_eq!(request.header_ignore_case("content-type"), Some(&"application/json".to_string()));
+        assert_eq!(request.content_type(), Some(&"application/json".to_string()));
+    }
+
+    #[test]
+    fn test_request_body() {
+        let url = Url::parse("https://example.com").unwrap();
+        let mut request = Request::new(Method::POST, url);
+        
+        let body = b"test body".to_vec();
+        request.body = Some(body);
+        
+        assert!(request.has_body());
+        assert_eq!(request.body_size(), 9);
+    }
+
+    #[test]
+    fn test_request_builder_validation() {
+        let client = Client::new();
+        let builder = RequestBuilder::new(Method::GET, "https://example.com", client.clone());
+        
+        assert!(builder.validate().is_ok());
+        
+        let invalid_builder = RequestBuilder::new(Method::GET, "invalid-url", client);
+        assert!(invalid_builder.validate().is_err());
+    }
+
+    #[test]
+    fn test_request_builder_size_estimation() {
+        let client = Client::new();
+        let builder = RequestBuilder::new(Method::GET, "https://example.com", client)
+            .header("Content-Type", "application/json")
+            .body("test body");
+        
+        let size = builder.estimated_size();
+        assert!(size > 0);
+        assert!(size > 50); // Should include method, URL, headers, and body
+    }
+
+    #[test]
+    fn test_request_builder_timeouts() {
+        let client = Client::new();
+        let builder = RequestBuilder::new(Method::GET, "https://example.com", client)
+            .timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(5))
+            .read_timeout(Duration::from_secs(15));
+        
+        assert_eq!(builder.client.timeout, Some(Duration::from_secs(10)));
+        assert_eq!(builder.client.connect_timeout, Some(Duration::from_secs(5)));
+        assert_eq!(builder.client.read_timeout, Some(Duration::from_secs(15)));
+    }
+
+    #[test]
+    fn test_request_builder_headers() {
+        let client = Client::new();
+        let builder = RequestBuilder::new(Method::GET, "https://example.com", client)
+            .user_agent("test-agent")
+            .accept("application/json")
+            .content_type("text/plain")
+            .referer("https://referrer.com")
+            .origin("https://origin.com");
+        
+        assert_eq!(builder.headers.get("User-Agent"), Some(&"test-agent".to_string()));
+        assert_eq!(builder.headers.get("Accept"), Some(&"application/json".to_string()));
+        assert_eq!(builder.headers.get("Content-Type"), Some(&"text/plain".to_string()));
+        assert_eq!(builder.headers.get("Referer"), Some(&"https://referrer.com".to_string()));
+        assert_eq!(builder.headers.get("Origin"), Some(&"https://origin.com".to_string()));
+    }
+
+    #[test]
+    fn test_request_debug_string() {
+        let url = Url::parse("https://example.com/api").unwrap();
+        let mut request = Request::new(Method::POST, url);
+        request.headers.insert("Content-Type".to_string(), "application/json".to_string());
+        request.body = Some(b"test".to_vec());
+        
+        let debug_str = request.to_debug_string();
+        assert!(debug_str.contains("POST /api HTTP/1.1"));
+        assert!(debug_str.contains("Host: example.com"));
+        assert!(debug_str.contains("Content-Type: application/json"));
+        assert!(debug_str.contains("test"));
+    }
+
+    #[test]
+    fn test_request_clone() {
+        let url = Url::parse("https://example.com").unwrap();
+        let mut request = Request::new(Method::GET, url);
+        request.headers.insert("Test".to_string(), "value".to_string());
+        request.body = Some(b"body".to_vec());
+        
+        let cloned = request.try_clone().unwrap();
+        assert_eq!(request.method, cloned.method);
+        assert_eq!(request.url.host, cloned.url.host);
+        assert_eq!(request.headers, cloned.headers);
+        assert_eq!(request.body, cloned.body);
     }
 }

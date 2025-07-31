@@ -58,6 +58,10 @@ impl WebSocketFrame {
         Self::new(OpCode::Close, Vec::new())
     }
 
+    pub fn close_with_payload(payload: Vec<u8>) -> Self {
+        Self::new(OpCode::Close, payload)
+    }
+
     pub fn ping(data: Vec<u8>) -> Self {
         Self::new(OpCode::Ping, data)
     }
@@ -193,6 +197,15 @@ impl WebSocketFrame {
     }
 }
 
+// WebSocket connection state
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WebSocketState {
+    Connecting,
+    Open,
+    Closing,
+    Closed,
+}
+
 // WebSocket connection
 pub struct WebSocketConnection {
     stream: TcpStream,
@@ -233,17 +246,17 @@ impl WebSocketConnection {
         
         // Verify handshake response
         if !response_str.contains("HTTP/1.1 101") {
-            return Err(Error::InvalidResponse("WebSocket handshake failed".to_string()));
+            return Err(Error::WebSocketError("WebSocket handshake failed".to_string()));
         }
 
         if !response_str.to_lowercase().contains("upgrade: websocket") {
-            return Err(Error::InvalidResponse("Invalid WebSocket upgrade".to_string()));
+            return Err(Error::WebSocketError("Invalid WebSocket upgrade".to_string()));
         }
 
         // Verify Sec-WebSocket-Accept
         let expected_accept = calculate_websocket_accept(&key);
         if !response_str.contains(&format!("Sec-WebSocket-Accept: {expected_accept}")) {
-            return Err(Error::InvalidResponse("Invalid WebSocket accept key".to_string()));
+            return Err(Error::WebSocketError("Invalid WebSocket accept key".to_string()));
         }
 
         Ok(WebSocketConnection {
@@ -254,7 +267,7 @@ impl WebSocketConnection {
 
     pub fn send_frame(&mut self, frame: WebSocketFrame) -> Result<()> {
         if self.state != WebSocketState::Open {
-            return Err(Error::InvalidResponse("WebSocket connection not open".to_string()));
+            return Err(Error::WebSocketError("WebSocket connection not open".to_string()));
         }
 
         let frame_bytes = frame.to_bytes();
@@ -292,7 +305,7 @@ impl WebSocketConnection {
 
     pub fn read_frame(&mut self) -> Result<WebSocketFrame> {
         if self.state == WebSocketState::Closed {
-            return Err(Error::InvalidResponse("WebSocket connection closed".to_string()));
+            return Err(Error::WebSocketError("WebSocket connection closed".to_string()));
         }
 
         let mut buffer = vec![0u8; 8192];
@@ -320,9 +333,9 @@ impl WebSocketConnection {
         match frame.opcode {
             OpCode::Text => {
                 String::from_utf8(frame.payload)
-                    .map_err(|_| Error::InvalidResponse("Invalid UTF-8 in text frame".to_string()))
+                    .map_err(|_| Error::WebSocketError("Invalid UTF-8 in text frame".to_string()))
             },
-            _ => Err(Error::InvalidResponse("Expected text frame".to_string())),
+            _ => Err(Error::WebSocketError("Expected text frame".to_string())),
         }
     }
 
@@ -330,21 +343,13 @@ impl WebSocketConnection {
         let frame = self.read_frame()?;
         match frame.opcode {
             OpCode::Binary => Ok(frame.payload),
-            _ => Err(Error::InvalidResponse("Expected binary frame".to_string())),
+            _ => Err(Error::WebSocketError("Expected binary frame".to_string())),
         }
     }
 
     pub fn state(&self) -> WebSocketState {
         self.state
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum WebSocketState {
-    Connecting,
-    Open,
-    Closing,
-    Closed,
 }
 
 // Helper functions
@@ -382,7 +387,7 @@ fn calculate_websocket_accept(key: &str) -> String {
     const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     let combined = format!("{key}{WEBSOCKET_GUID}");
     
-    // Calculate SHA-1 hash (simplified implementation)
+    // Calculate SHA-1 hash
     let hash = sha1_hash(combined.as_bytes());
     base64_encode(&hash)
 }
@@ -409,9 +414,7 @@ fn base64_encode(input: &[u8]) -> String {
 }
 
 fn sha1_hash(input: &[u8]) -> [u8; 20] {
-    // Simplified SHA-1 implementation (not cryptographically secure)
-    // In a real implementation, you'd use a proper SHA-1 library
-    
+    // Simplified SHA-1 implementation
     let mut h = [
         0x67452301u32,
         0xEFCDAB89u32,

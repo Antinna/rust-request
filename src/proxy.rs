@@ -1,4 +1,4 @@
-use crate::{Auth, Url, Result};
+use crate::{Auth, Error, Url, Result};
 
 #[derive(Debug, Clone)]
 pub struct Proxy {
@@ -246,4 +246,250 @@ pub fn parse_proxy_env() -> Option<Proxy> {
     }
     
     None
+}
+
+// Enhanced SOCKS proxy implementation
+pub struct SocksConnector {
+    proxy: Proxy,
+}
+
+impl SocksConnector {
+    pub fn new(proxy: Proxy) -> Self {
+        SocksConnector { proxy }
+    }
+
+    pub fn connect_socks4(&self, target_host: &str, target_port: u16) -> Result<Vec<u8>> {
+        let mut request = Vec::new();
+        
+        // SOCKS4 request format:
+        // VER | CMD | DSTPORT | DSTIP | USERID | NULL
+        request.push(0x04); // Version 4
+        request.push(0x01); // CONNECT command
+        
+        // Destination port (2 bytes, big-endian)
+        request.extend_from_slice(&target_port.to_be_bytes());
+        
+        // Destination IP (4 bytes)
+        let target_ip = resolve_hostname(target_host)?;
+        request.extend_from_slice(&target_ip);
+        
+        // User ID (empty for now)
+        request.push(0x00); // NULL terminator
+        
+        Ok(request)
+    }
+
+    pub fn connect_socks5(&self, target_host: &str, target_port: u16) -> Result<Vec<u8>> {
+        let mut request = Vec::new();
+        
+        // SOCKS5 connect request:
+        // VER | CMD | RSV | ATYP | DST.ADDR | DST.PORT
+        request.push(0x05); // Version 5
+        request.push(0x01); // CONNECT command
+        request.push(0x00); // Reserved
+        
+        // Address type and address
+        if let Ok(ip) = target_host.parse::<std::net::Ipv4Addr>() {
+            // IPv4 address
+            request.push(0x01); // IPv4
+            request.extend_from_slice(&ip.octets());
+        } else if let Ok(ip) = target_host.parse::<std::net::Ipv6Addr>() {
+            // IPv6 address
+            request.push(0x04); // IPv6
+            request.extend_from_slice(&ip.octets());
+        } else {
+            // Domain name
+            request.push(0x03); // Domain name
+            let hostname_bytes = target_host.as_bytes();
+            request.push(hostname_bytes.len() as u8);
+            request.extend_from_slice(hostname_bytes);
+        }
+        
+        // Port (2 bytes, big-endian)
+        request.extend_from_slice(&target_port.to_be_bytes());
+        
+        Ok(request)
+    }
+
+    pub fn create_socks5_auth_request(&self) -> Vec<u8> {
+        let mut request = Vec::new();
+        
+        // SOCKS5 authentication request:
+        // VER | NMETHODS | METHODS
+        request.push(0x05); // Version 5
+        
+        if self.proxy.auth.is_some() {
+            // Support both no auth and username/password
+            request.push(0x02); // Number of methods
+            request.push(0x00); // No authentication
+            request.push(0x02); // Username/password authentication
+        } else {
+            // Only no authentication
+            request.push(0x01); // Number of methods
+            request.push(0x00); // No authentication
+        }
+        
+        request
+    }
+
+    pub fn create_socks5_username_password_auth(&self) -> Result<Vec<u8>> {
+        let auth = self.proxy.auth.as_ref()
+            .ok_or_else(|| Error::ProxyError("No authentication provided".to_string()))?;
+
+        match auth {
+            Auth::Basic(basic_auth) => {
+                let mut request = Vec::new();
+                
+                // Username/password authentication:
+                // VER | ULEN | UNAME | PLEN | PASSWD
+                request.push(0x01); // Version 1
+                
+                // Username
+                let username = basic_auth.username.as_bytes();
+                request.push(username.len() as u8);
+                request.extend_from_slice(username);
+                
+                // Password
+                let password = basic_auth.password.as_bytes();
+                request.push(password.len() as u8);
+                request.extend_from_slice(password);
+                
+                Ok(request)
+            },
+            _ => Err(Error::ProxyError("Unsupported authentication type for SOCKS5".to_string())),
+        }
+    }
+
+    pub fn parse_socks4_response(&self, response: &[u8]) -> Result<bool> {
+        if response.len() < 8 {
+            return Err(Error::ProxyError("Invalid SOCKS4 response".to_string()));
+        }
+
+        let version = response[0];
+        let status = response[1];
+
+        if version != 0x00 {
+            return Err(Error::ProxyError("Invalid SOCKS4 response version".to_string()));
+        }
+
+        match status {
+            0x5A => Ok(true), // Request granted
+            0x5B => Err(Error::ProxyError("SOCKS4: Request rejected or failed".to_string())),
+            0x5C => Err(Error::ProxyError("SOCKS4: Cannot connect to identd".to_string())),
+            0x5D => Err(Error::ProxyError("SOCKS4: Different user IDs".to_string())),
+            _ => Err(Error::ProxyError("SOCKS4: Unknown error".to_string())),
+        }
+    }
+
+    pub fn parse_socks5_response(&self, response: &[u8]) -> Result<bool> {
+        if response.len() < 4 {
+            return Err(Error::ProxyError("Invalid SOCKS5 connect response".to_string()));
+        }
+
+        let version = response[0];
+        let status = response[1];
+        let _reserved = response[2];
+        let address_type = response[3];
+
+        if version != 0x05 {
+            return Err(Error::ProxyError("Invalid SOCKS5 version".to_string()));
+        }
+
+        match status {
+            0x00 => {
+                // Success - validate the rest of the response
+                let expected_len = match address_type {
+                    0x01 => 10, // IPv4: 4 + 4 + 2
+                    0x03 => {   // Domain name: 4 + 1 + len + 2
+                        if response.len() < 5 {
+                            return Err(Error::ProxyError("Invalid domain response".to_string()));
+                        }
+                        5 + response[4] as usize + 2
+                    },
+                    0x04 => 22, // IPv6: 4 + 16 + 2
+                    _ => return Err(Error::ProxyError("Invalid address type".to_string())),
+                };
+
+                if response.len() < expected_len {
+                    return Err(Error::ProxyError("Incomplete SOCKS5 response".to_string()));
+                }
+
+                Ok(true)
+            },
+            0x01 => Err(Error::ProxyError("SOCKS5: General SOCKS server failure".to_string())),
+            0x02 => Err(Error::ProxyError("SOCKS5: Connection not allowed by ruleset".to_string())),
+            0x03 => Err(Error::ProxyError("SOCKS5: Network unreachable".to_string())),
+            0x04 => Err(Error::ProxyError("SOCKS5: Host unreachable".to_string())),
+            0x05 => Err(Error::ProxyError("SOCKS5: Connection refused".to_string())),
+            0x06 => Err(Error::ProxyError("SOCKS5: TTL expired".to_string())),
+            0x07 => Err(Error::ProxyError("SOCKS5: Command not supported".to_string())),
+            0x08 => Err(Error::ProxyError("SOCKS5: Address type not supported".to_string())),
+            _ => Err(Error::ProxyError("SOCKS5: Unknown error".to_string())),
+        }
+    }
+}
+
+// Proxy connection manager
+pub struct ProxyManager {
+    proxy: Proxy,
+}
+
+impl ProxyManager {
+    pub fn new(proxy: Proxy) -> Self {
+        ProxyManager { proxy }
+    }
+
+    pub fn get_proxy_type(&self) -> ProxyType {
+        ProxyType::from_scheme(&self.proxy.url.scheme).unwrap_or(ProxyType::Http)
+    }
+
+    pub fn create_connect_request(&self, target_host: &str, target_port: u16) -> Result<Vec<u8>> {
+        match self.get_proxy_type() {
+            ProxyType::Http | ProxyType::Https => {
+                self.create_http_connect_request(target_host, target_port)
+            },
+            ProxyType::Socks4 => {
+                let connector = SocksConnector::new(self.proxy.clone());
+                connector.connect_socks4(target_host, target_port)
+            },
+            ProxyType::Socks5 => {
+                let connector = SocksConnector::new(self.proxy.clone());
+                connector.connect_socks5(target_host, target_port)
+            },
+        }
+    }
+
+    fn create_http_connect_request(&self, target_host: &str, target_port: u16) -> Result<Vec<u8>> {
+        let mut request = format!(
+            "CONNECT {target_host}:{target_port} HTTP/1.1\r\nHost: {target_host}:{target_port}\r\n"
+        );
+
+        // Add proxy authentication if needed
+        if let Some(Auth::Basic(basic_auth)) = &self.proxy.auth {
+            request.push_str(&format!(
+                "Proxy-Authorization: {}\r\n",
+                basic_auth.to_header_value()
+            ));
+        }
+
+        request.push_str("\r\n");
+        Ok(request.into_bytes())
+    }
+
+    pub fn parse_response(&self, response: &[u8]) -> Result<bool> {
+        match self.get_proxy_type() {
+            ProxyType::Http | ProxyType::Https => {
+                let response_str = String::from_utf8_lossy(response);
+                Ok(response_str.starts_with("HTTP/1.1 200") || response_str.starts_with("HTTP/1.0 200"))
+            },
+            ProxyType::Socks4 => {
+                let connector = SocksConnector::new(self.proxy.clone());
+                connector.parse_socks4_response(response)
+            },
+            ProxyType::Socks5 => {
+                let connector = SocksConnector::new(self.proxy.clone());
+                connector.parse_socks5_response(response)
+            },
+        }
+    }
 }

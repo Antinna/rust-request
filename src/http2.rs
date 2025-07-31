@@ -62,6 +62,10 @@ impl FrameFlags {
     pub fn has_flag(&self, flag: u8) -> bool {
         self.0 & flag != 0
     }
+
+    pub fn set(&mut self, flag: u8) {
+        self.0 |= flag;
+    }
 }
 
 // HTTP/2 frame structure
@@ -179,18 +183,129 @@ impl Http2Connection {
 
     pub fn create_settings_frame(&self) -> Frame {
         let mut payload = Vec::new();
-
-        for (&id, &value) in &self.settings {
-            payload.extend_from_slice(&id.to_be_bytes());
+        
+        for (&setting_id, &value) in &self.settings {
+            payload.extend_from_slice(&setting_id.to_be_bytes());
             payload.extend_from_slice(&value.to_be_bytes());
         }
+        
+        Frame::new(FrameType::Settings, FrameFlags::new(), 0, payload)
+    }
 
-        Frame::new(
-            FrameType::Settings,
-            FrameFlags::new(),
-            0, // Stream ID 0 for connection-level frames
-            payload,
-        )
+    pub fn create_stream(&mut self) -> u32 {
+        let stream_id = self.next_stream_id;
+        self.next_stream_id += 2; // Client streams are odd-numbered
+        
+        let stream = Http2Stream::new(stream_id);
+        self.streams.insert(stream_id, stream);
+        
+        stream_id
+    }
+
+    pub fn send_headers(&mut self, stream_id: u32, headers: Vec<(String, String)>, end_stream: bool) -> Result<Vec<u8>> {
+        // Check if stream exists first
+        if !self.streams.contains_key(&stream_id) {
+            return Err(Error::Http2Error(format!("Stream {stream_id} not found")));
+        }
+
+        // Encode headers using HPACK (simplified)
+        let encoded_headers = self.encode_headers(&headers)?;
+        
+        let mut flags = FrameFlags::new();
+        flags.set(FrameFlags::END_HEADERS);
+        if end_stream {
+            flags.set(FrameFlags::END_STREAM);
+            // Update stream after encoding headers
+            if let Some(stream) = self.streams.get_mut(&stream_id) {
+                stream.complete = true;
+            }
+        }
+        
+        let frame = Frame::new(FrameType::Headers, flags, stream_id, encoded_headers);
+        Ok(frame.to_bytes())
+    }
+
+    pub fn send_data(&mut self, stream_id: u32, data: Vec<u8>, end_stream: bool) -> Result<Vec<u8>> {
+        // Check if stream exists and get window size
+        let stream_window_size = self.streams.get(&stream_id)
+            .ok_or_else(|| Error::Http2Error(format!("Stream {stream_id} not found")))?
+            .window_size;
+
+        // Check flow control
+        if data.len() as u32 > stream_window_size {
+            return Err(Error::Http2Error("Data size exceeds stream window size".to_string()));
+        }
+
+        if data.len() as u32 > self.window_size {
+            return Err(Error::Http2Error("Data size exceeds connection window size".to_string()));
+        }
+
+        // Update flow control windows
+        if let Some(stream) = self.streams.get_mut(&stream_id) {
+            stream.window_size -= data.len() as u32;
+        }
+        self.window_size -= data.len() as u32;
+
+        let mut flags = FrameFlags::new();
+        if end_stream {
+            flags.set(FrameFlags::END_STREAM);
+            if let Some(stream) = self.streams.get_mut(&stream_id) {
+                stream.complete = true;
+            }
+        }
+
+        let frame = Frame::new(FrameType::Data, flags, stream_id, data);
+        Ok(frame.to_bytes())
+    }
+
+    fn encode_headers(&self, headers: &[(String, String)]) -> Result<Vec<u8>> {
+        // Simplified HPACK encoding
+        let mut encoded = Vec::new();
+        
+        for (name, value) in headers {
+            // Try to find in static table first
+            if let Some(index) = self.find_in_static_table(name, value) {
+                // Indexed header field
+                encoded.push(0x80 | index);
+            } else {
+                // Literal header field with incremental indexing
+                encoded.push(0x40);
+                
+                // Encode name
+                self.encode_string(&mut encoded, name);
+                
+                // Encode value
+                self.encode_string(&mut encoded, value);
+            }
+        }
+        
+        Ok(encoded)
+    }
+
+    fn find_in_static_table(&self, name: &str, value: &str) -> Option<u8> {
+        // Simplified static table lookup
+        match (name.to_lowercase().as_str(), value) {
+            (":authority", "") => Some(1),
+            (":method", "GET") => Some(2),
+            (":method", "POST") => Some(3),
+            (":path", "/") => Some(4),
+            (":scheme", "http") => Some(6),
+            (":scheme", "https") => Some(7),
+            (":status", "200") => Some(8),
+            (":status", "404") => Some(13),
+            (":status", "500") => Some(14),
+            ("accept-encoding", "gzip, deflate") => Some(16),
+            ("content-type", "application/json") => Some(31),
+            _ => None,
+        }
+    }
+
+    fn encode_string(&self, output: &mut Vec<u8>, s: &str) {
+        let bytes = s.as_bytes();
+        
+        // For simplicity, we're not using Huffman encoding
+        output.push(bytes.len() as u8);
+        output.extend_from_slice(bytes);
     }
 
     pub fn create_headers_frame(
@@ -320,26 +435,6 @@ impl Http2Connection {
         }
 
         Ok(())
-    }
-
-    fn encode_headers(&self, headers: &[(String, String)]) -> Result<Vec<u8>> {
-        // Simplified HPACK encoding
-        let mut encoded = Vec::new();
-
-        for (name, value) in headers {
-            // Literal header field with incremental indexing
-            encoded.push(0x40);
-
-            // Name length and name
-            encoded.push(name.len() as u8);
-            encoded.extend_from_slice(name.as_bytes());
-
-            // Value length and value
-            encoded.push(value.len() as u8);
-            encoded.extend_from_slice(value.as_bytes());
-        }
-
-        Ok(encoded)
     }
 
     fn decode_headers(&self, data: &[u8]) -> Result<Vec<(String, String)>> {

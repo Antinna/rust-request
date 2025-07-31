@@ -12,7 +12,24 @@ pub mod json;
 pub mod tls;
 pub mod http2;
 pub mod websocket;
+pub mod websocket_client;
 pub mod dns;
+pub mod metrics;
+pub mod retry;
+pub mod cache;
+pub mod streaming;
+pub mod session;
+pub mod middleware;
+pub mod testing;
+pub mod tracing;
+pub mod circuit_breaker;
+pub mod load_balancer;
+pub mod profiler;
+pub mod connection;
+pub mod security;
+pub mod observability;
+pub mod rate_limiting;
+pub mod advanced_cache;
 
 pub use client::{Client, ClientBuilder};
 pub use request::{Request, RequestBuilder};
@@ -23,6 +40,12 @@ pub use auth::{Auth, BasicAuth, BearerAuth};
 pub use proxy::Proxy;
 pub use multipart::{MultipartForm, Part};
 pub use json::{JsonValue, JsonParser};
+pub use security::{SecurityManager, SecurityMiddleware};
+pub use profiler::{PhaseData, CpuTracker, StackSample};
+pub use connection::{MultiplexedConnection};
+pub use observability::{ObservabilityManager, MetricsCollector, HealthMonitor};
+pub use rate_limiting::{AdvancedRateLimiter, RateLimitingAlgorithm, TokenBucketLimiter};
+pub use advanced_cache::{MultiLevelCache, CacheConfig, CacheWarmer};
 
 // Re-export common HTTP methods
 pub fn get(url: &str) -> RequestBuilder {
